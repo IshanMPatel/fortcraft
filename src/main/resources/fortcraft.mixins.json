@@ -3,7 +3,8 @@
 	"package": "fortcraft.mixin",
 	"compatibilityLevel": "JAVA_21",
 	"mixins": [
-		"ExampleMixin"
+		"ExampleMixin",
+		"EggEntityMixin"
 	],
 	"injectors": {
 		"defaultRequire": 1
