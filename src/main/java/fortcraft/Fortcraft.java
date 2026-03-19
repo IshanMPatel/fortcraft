@@ -1,5 +1,13 @@
 package fortcraft;
 
+import net.minecraft.block.AbstractBlock;
+import net.minecraft.block.Block;
+import net.minecraft.registry.Registries;
+import net.minecraft.registry.Registry;
+import net.minecraft.registry.RegistryKey;
+import net.minecraft.registry.RegistryKeys;
+import net.minecraft.util.Identifier;
+
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.event.player.UseBlockCallback;
 import net.fabricmc.fabric.api.event.player.UseItemCallback;
@@ -31,6 +39,14 @@ public class Fortcraft implements ModInitializer {
 	public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
 
     public static Fortcraft INSTANCE;
+
+    public static final Identifier FORT_WALL_ID = Identifier.of(MOD_ID, "fort_wall");
+    public static final RegistryKey<Block> FORT_WALL_KEY = RegistryKey.of(RegistryKeys.BLOCK, FORT_WALL_ID);
+    public static final Block FORT_WALL = new FortWallBlock(AbstractBlock.Settings.copy(Blocks.COBBLESTONE).registryKey(FORT_WALL_KEY));
+
+    public static final Identifier FORT_RAMP_ID = Identifier.of(MOD_ID, "fort_ramp");
+    public static final RegistryKey<Block> FORT_RAMP_KEY = RegistryKey.of(RegistryKeys.BLOCK, FORT_RAMP_ID);
+    public static final Block FORT_RAMP = new FortRampBlock(FORT_WALL.getDefaultState(), AbstractBlock.Settings.copy(Blocks.COBBLESTONE).registryKey(FORT_RAMP_KEY));
 
     public Fortcraft() {
         INSTANCE = this;
@@ -111,7 +127,7 @@ public class Fortcraft implements ModInitializer {
                     int lockedX = (distToWest < distToEast) ? cellStartX : cellStartX + gridSize;
                     pos = new BlockPos(lockedX, cellStartY + y, cellStartZ + w);
                 }
-                blueprint.put(pos, Blocks.COBBLESTONE.getDefaultState());
+                blueprint.put(pos, FORT_WALL.getDefaultState());
             }
         }
         return placeBlueprint(world, blueprint);
@@ -127,7 +143,7 @@ public class Fortcraft implements ModInitializer {
         Map<BlockPos, BlockState> blueprint = new HashMap<>();
         for (int x = 0; x <= gridSize; x++) {
             for (int z = 0; z <= gridSize; z++) {
-                blueprint.put(new BlockPos(cellX + x, cellY, cellZ + z), Blocks.COBBLESTONE.getDefaultState());
+                blueprint.put(new BlockPos(cellX + x, cellY, cellZ + z), FORT_WALL.getDefaultState());
             }
         }
         return placeBlueprint(world, blueprint);
@@ -141,7 +157,7 @@ public class Fortcraft implements ModInitializer {
         int cellZ = Math.floorDiv((int)Math.floor(targetPos.z), gridSize) * gridSize;
 
         Direction facing = player.getHorizontalFacing();
-        var state = Blocks.COBBLESTONE_STAIRS.getDefaultState().with(StairsBlock.FACING, facing);
+        var state = FORT_RAMP.getDefaultState().with(StairsBlock.FACING, facing);
 
         Map<BlockPos, BlockState> blueprint = new HashMap<>();
         for (int step = 0; step <= gridSize; step++) {
@@ -173,14 +189,14 @@ public class Fortcraft implements ModInitializer {
                     if (x == min || x == max || z == min || z == max) {
                         BlockPos pos = new BlockPos(cellX + x, cellY + step, cellZ + z);
                         if (step == 2) {
-                            blueprint.put(pos, Blocks.COBBLESTONE.getDefaultState());
+                            blueprint.put(pos, FORT_WALL.getDefaultState());
                         } else {
                             Direction facing = Direction.NORTH;
                             if (z == min) facing = Direction.SOUTH;
                             else if (z == max) facing = Direction.NORTH;
                             else if (x == min) facing = Direction.EAST;
                             else if (x == max) facing = Direction.WEST;
-                            blueprint.put(pos, Blocks.COBBLESTONE_STAIRS.getDefaultState().with(StairsBlock.FACING, facing));
+                            blueprint.put(pos, FORT_RAMP.getDefaultState().with(StairsBlock.FACING, facing));
                         }
                     }
                 }
@@ -275,6 +291,10 @@ public class Fortcraft implements ModInitializer {
 		// Proceed with mild caution.
 
 		LOGGER.info("Hello Fabric world!");
+
+        Registry.register(Registries.BLOCK, FORT_WALL_ID, FORT_WALL);
+        Registry.register(Registries.BLOCK, FORT_RAMP_ID, FORT_RAMP);
+
         UseBlockCallback.EVENT.register((player, world, hand, hitResult) -> handleInteraction(player, world, hand));
         UseItemCallback.EVENT.register((player, world, hand) -> handleInteraction(player, world, hand));
 	}
