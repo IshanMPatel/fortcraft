@@ -1,6 +1,6 @@
 {
   "parent": "minecraft:block/cube_all",
   "textures": {
-    "all": "fortcraft:block/fort_wall"
+    "all": "fortcraft:block/fort_metal"
   }
 }

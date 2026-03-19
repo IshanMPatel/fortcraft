@@ -17,7 +17,10 @@ import net.minecraft.block.HorizontalFacingBlock;
 import net.minecraft.block.StairsBlock;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.item.Items;
+import net.minecraft.text.Text;
 import net.minecraft.util.ActionResult;
+import net.minecraft.util.Formatting;
+import net.minecraft.util.Hand;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Vec3d;
 import net.minecraft.world.World;
@@ -26,6 +29,7 @@ import net.minecraft.util.math.Direction;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -48,15 +52,45 @@ public class Fortcraft implements ModInitializer {
     public static final RegistryKey<Block> FORT_RAMP_KEY = RegistryKey.of(RegistryKeys.BLOCK, FORT_RAMP_ID);
     public static final Block FORT_RAMP = new FortRampBlock(FORT_WALL.getDefaultState(), AbstractBlock.Settings.copy(Blocks.COBBLESTONE).registryKey(FORT_RAMP_KEY));
 
+    // Material tracker (0=Wood, 1=Brick, 2=Metal)
+    public static final Map<UUID, Integer> PLAYER_MATERIALS = new HashMap<>();
+
     public Fortcraft() {
         INSTANCE = this;
     }
 
-    private ActionResult handleInteraction(PlayerEntity player, World world, net.minecraft.util.Hand hand) {
-        if (player.getStackInHand(hand).isOf(Items.PAPER)) return buildWall(player, world);
-        if (player.getStackInHand(hand).isOf(Items.FEATHER)) return buildRamp(player, world);
-        if (player.getStackInHand(hand).isOf(Items.BOWL)) return buildFloor(player, world);
-        if (player.getStackInHand(hand).isOf(Items.WHEAT)) return buildCone(player, world);
+    private ActionResult handleInteraction(PlayerEntity player, World world, Hand hand) {
+        boolean isBlueprint = player.getStackInHand(hand).isOf(Items.PAPER) ||
+                              player.getStackInHand(hand).isOf(Items.FEATHER) ||
+                              player.getStackInHand(hand).isOf(Items.BOWL) ||
+                              player.getStackInHand(hand).isOf(Items.WHEAT);
+
+        if (!isBlueprint) return ActionResult.PASS;
+
+        // Material swapping (Sneak + Right Click)
+        if (player.isSneaking()) {
+            if (!world.isClient && hand == Hand.MAIN_HAND) {
+                var blueprintStack = player.getStackInHand(hand);
+                if (!player.getItemCooldownManager().isCoolingDown(blueprintStack)) {
+                    int currentMat = PLAYER_MATERIALS.getOrDefault(player.getUuid(), 0);
+                    int nextMat = (currentMat + 1) % 3; // Cycles 0 -> 1 -> 2 -> 0
+                    PLAYER_MATERIALS.put(player.getUuid(), nextMat);
+                    String matName = nextMat == 0 ? "Wood" : (nextMat == 1 ? "Brick" : "Metal");
+                    Formatting color = nextMat == 0 ? Formatting.YELLOW : (nextMat == 1 ? Formatting.RED : Formatting.GRAY);
+                    player.sendMessage(Text.literal("Material: " + matName).formatted(color), true);
+                    player.getItemCooldownManager().set(blueprintStack, 5);
+                }
+            }
+            return ActionResult.SUCCESS;
+        }
+
+        int material = PLAYER_MATERIALS.getOrDefault(player.getUuid(), 0);
+
+        if (player.getStackInHand(hand).isOf(Items.PAPER)) return buildWall(player, world, material);
+        if (player.getStackInHand(hand).isOf(Items.FEATHER)) return buildRamp(player, world, material);
+        if (player.getStackInHand(hand).isOf(Items.BOWL)) return buildFloor(player, world, material);
+        if (player.getStackInHand(hand).isOf(Items.WHEAT)) return buildCone(player, world, material);
+
         return ActionResult.PASS;
     }
 
@@ -75,7 +109,6 @@ public class Fortcraft implements ModInitializer {
         return false;
     }
 
-    // TODO: handle changing of material type
     private ActionResult placeBlueprint(World world, Map<BlockPos, BlockState> blueprint) {
         if (!checkSupport(world, blueprint.keySet())) return ActionResult.PASS;
 
@@ -89,11 +122,9 @@ public class Fortcraft implements ModInitializer {
                 if (world.getBlockState(pos.down()).isOf(Blocks.COBBLESTONE)) {
                     world.removeBlock(pos.down(), false);
                 }
-            } else if (newState.isOf(Blocks.COBBLESTONE)) {
+            } else if (newState.getBlock() == FORT_WALL) {
                 if (oldState.getBlock() instanceof StairsBlock) continue;
                 if (world.getBlockState(pos.up()).getBlock() instanceof StairsBlock) continue;
-                world.setBlockState(pos, newState);
-            } else if (newState.getBlock() == oldState.getBlock()) {
                 world.setBlockState(pos, newState);
             } else if (oldState.isReplaceable()) {
                 world.setBlockState(pos, newState);
@@ -102,7 +133,7 @@ public class Fortcraft implements ModInitializer {
         return ActionResult.SUCCESS;
     }
 
-    private ActionResult buildWall(PlayerEntity player, World world) {
+    private ActionResult buildWall(PlayerEntity player, World world, int material) {
         Vec3d targetPos = getTargetPos(player);
         int gridSize = 4;
         int cellStartX = Math.floorDiv((int)Math.floor(targetPos.x), gridSize) * gridSize;
@@ -117,23 +148,27 @@ public class Fortcraft implements ModInitializer {
         double distToSouth = (cellStartZ + gridSize) - targetPos.z;
 
         Map<BlockPos, BlockState> blueprint = new HashMap<>();
+        BlockState wallState = FORT_WALL.getDefaultState().with(FortWallBlock.MATERIAL, material);
+
         for (int y = 0; y <= gridSize; y++) {
             for (int w = 0; w <= gridSize; w++) {
                 BlockPos pos;
                 if (facing == Direction.NORTH || facing == Direction.SOUTH) {
                     int lockedZ = (distToNorth < distToSouth) ? cellStartZ : cellStartZ + gridSize;
                     pos = new BlockPos(cellStartX + w, cellStartY + y, lockedZ);
+                    wallState = wallState.with(FortWallBlock.FACING, distToNorth < distToSouth ? Direction.NORTH : Direction.SOUTH);
                 } else {
                     int lockedX = (distToWest < distToEast) ? cellStartX : cellStartX + gridSize;
                     pos = new BlockPos(lockedX, cellStartY + y, cellStartZ + w);
+                    wallState = wallState.with(FortWallBlock.FACING, distToWest < distToEast ? Direction.WEST : Direction.EAST);
                 }
-                blueprint.put(pos, FORT_WALL.getDefaultState());
+                blueprint.put(pos, wallState);
             }
         }
         return placeBlueprint(world, blueprint);
     }
 
-    private ActionResult buildFloor(PlayerEntity player, World world) {
+    private ActionResult buildFloor(PlayerEntity player, World world, int material) {
         Vec3d targetPos = getTargetPos(player);
         int gridSize = 4;
         int cellX = Math.floorDiv((int)Math.floor(targetPos.x), gridSize) * gridSize;
@@ -141,15 +176,17 @@ public class Fortcraft implements ModInitializer {
         int cellZ = Math.floorDiv((int)Math.floor(targetPos.z), gridSize) * gridSize;
 
         Map<BlockPos, BlockState> blueprint = new HashMap<>();
+        BlockState floorState = FORT_WALL.getDefaultState().with(FortWallBlock.MATERIAL, material);
+
         for (int x = 0; x <= gridSize; x++) {
             for (int z = 0; z <= gridSize; z++) {
-                blueprint.put(new BlockPos(cellX + x, cellY, cellZ + z), FORT_WALL.getDefaultState());
+                blueprint.put(new BlockPos(cellX + x, cellY, cellZ + z), floorState);
             }
         }
         return placeBlueprint(world, blueprint);
     }
 
-    private ActionResult buildRamp(PlayerEntity player, World world) {
+    private ActionResult buildRamp(PlayerEntity player, World world, int material) {
         Vec3d targetPos = getTargetPos(player);
         int gridSize = 4;
         int cellX = Math.floorDiv((int)Math.floor(targetPos.x), gridSize) * gridSize;
@@ -157,7 +194,7 @@ public class Fortcraft implements ModInitializer {
         int cellZ = Math.floorDiv((int)Math.floor(targetPos.z), gridSize) * gridSize;
 
         Direction facing = player.getHorizontalFacing();
-        var state = FORT_RAMP.getDefaultState().with(StairsBlock.FACING, facing);
+        BlockState state = FORT_RAMP.getDefaultState().with(StairsBlock.FACING, facing).with(FortRampBlock.MATERIAL, material);
 
         Map<BlockPos, BlockState> blueprint = new HashMap<>();
         for (int step = 0; step <= gridSize; step++) {
@@ -173,7 +210,7 @@ public class Fortcraft implements ModInitializer {
         return placeBlueprint(world, blueprint);
     }
 
-    private ActionResult buildCone(PlayerEntity player, World world) {
+    private ActionResult buildCone(PlayerEntity player, World world, int material) {
         Vec3d targetPos = getTargetPos(player);
         int gridSize = 4;
         int cellX = Math.floorDiv((int)Math.floor(targetPos.x), gridSize) * gridSize;
@@ -181,6 +218,8 @@ public class Fortcraft implements ModInitializer {
         int cellZ = Math.floorDiv((int)Math.floor(targetPos.z), gridSize) * gridSize;
 
         Map<BlockPos, BlockState> blueprint = new HashMap<>();
+        BlockState wallState = FORT_WALL.getDefaultState().with(FortWallBlock.MATERIAL, material);
+
         for (int step = 0; step <= 2; step++) {
             int min = step;
             int max = gridSize - step;
@@ -189,14 +228,14 @@ public class Fortcraft implements ModInitializer {
                     if (x == min || x == max || z == min || z == max) {
                         BlockPos pos = new BlockPos(cellX + x, cellY + step, cellZ + z);
                         if (step == 2) {
-                            blueprint.put(pos, FORT_WALL.getDefaultState());
+                            blueprint.put(pos, wallState);
                         } else {
                             Direction facing = Direction.NORTH;
                             if (z == min) facing = Direction.SOUTH;
                             else if (z == max) facing = Direction.NORTH;
                             else if (x == min) facing = Direction.EAST;
                             else if (x == max) facing = Direction.WEST;
-                            blueprint.put(pos, FORT_RAMP.getDefaultState().with(StairsBlock.FACING, facing));
+                            blueprint.put(pos, FORT_RAMP.getDefaultState().with(StairsBlock.FACING, facing).with(FortRampBlock.MATERIAL, material));
                         }
                     }
                 }

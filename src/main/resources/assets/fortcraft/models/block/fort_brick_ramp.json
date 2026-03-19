@@ -1,0 +1,8 @@
+{
+  "parent": "minecraft:block/stairs",
+  "textures": {
+    "bottom": "fortcraft:block/fort_brick",
+    "top": "fortcraft:block/fort_brick",
+    "side": "fortcraft:block/fort_brick"
+  }
+}

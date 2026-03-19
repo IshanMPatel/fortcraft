@@ -1,0 +1,8 @@
+{
+  "parent": "minecraft:block/inner_stairs",
+  "textures": {
+    "bottom": "fortcraft:block/fort_metal",
+    "top": "fortcraft:block/fort_metal",
+    "side": "fortcraft:block/fort_metal"
+  }
+}
