@@ -3,30 +3,95 @@ package fortcraft;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
-import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderEvents;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
+import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
+import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderEvents;
+import net.minecraft.block.BlockState;
 import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.option.KeyBinding;
 import net.minecraft.client.render.RenderLayer;
 import net.minecraft.client.render.VertexConsumer;
+import net.minecraft.client.util.InputUtil;
 import net.minecraft.client.util.math.MatrixStack;
 import net.minecraft.item.Items;
 import net.minecraft.util.Hand;
+import net.minecraft.util.hit.BlockHitResult;
+import net.minecraft.util.hit.HitResult;
+import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Box;
 import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
-import net.minecraft.util.math.BlockPos;
+
+import org.lwjgl.glfw.GLFW;
 
 @Environment(EnvType.CLIENT)
 public class FortcraftClient implements ClientModInitializer {
 
     private BlockPos lastBuiltGrid = null;
 
+    private static boolean editing = false;
+    private BlockPos editOrigin = null;
+    private Direction editFacing = null;
+    private boolean[] editGrid = new boolean[25];
+
+    private static KeyBinding editKey;
+
+    private boolean wasLeftDown = false;
+    private boolean wasRightDown = false;
+    private boolean dragTargetState = false;
+    private int lastAimedCell = -1;
+    private int lastHotbarSlot = -1;
+
+    public static boolean isEditing() {
+        return editing;
+    }
+
     @Override
     public void onInitializeClient() {
-        // Turbo build
+        editKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
+                "key.fortcraft.edit",
+                InputUtil.Type.KEYSYM,
+                GLFW.GLFW_KEY_G,
+                "category.fortcraft"
+        ));
+
+        ClientTickEvents.START_CLIENT_TICK.register(client -> {
+            if (editing && client.options != null) {
+                while (client.options.attackKey.wasPressed()) {}
+                client.options.attackKey.setPressed(false);
+            }
+        });
+
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             if (client.player == null || client.world == null) return;
+
+            while (editKey.wasPressed()) {
+                if (!editing) {
+                    tryEnterEditMode(client);
+                } else {
+                    confirmEdit();
+                }
+            }
+
+            if (editing) {
+                boolean cancel = false;
+                if (client.player.getInventory().selectedSlot != lastHotbarSlot) {
+                    cancel = true;
+                } else if (editOrigin != null && client.player.getPos().squaredDistanceTo(editOrigin.toCenterPos()) > 64.0) {
+                    cancel = true;
+                }
+                
+                if (cancel || !handleEditClicks(client)) {
+                    cancelEdit();
+                } else {
+                    return;
+                }
+            }
+
+            if (client.player != null) {
+                lastHotbarSlot = client.player.getInventory().selectedSlot;
+            }
 
             if (!client.options.useKey.isPressed()) {
                 lastBuiltGrid = null;
@@ -56,9 +121,19 @@ public class FortcraftClient implements ClientModInitializer {
             }
         });
 
+        // Render: preview boxes + edit overlay
         WorldRenderEvents.LAST.register(context -> {
             MinecraftClient client = MinecraftClient.getInstance();
             if (client.player == null || client.world == null) return;
+
+            Vec3d cameraPos = context.camera().getPos();
+            MatrixStack matrices = context.matrixStack();
+            VertexConsumer buffer = context.consumers().getBuffer(RenderLayer.getLines());
+
+            if (editing && editOrigin != null && editFacing != null) {
+                renderEditOverlay(matrices, buffer, cameraPos);
+                return;
+            }
 
             boolean isWall = client.player.getMainHandStack().isOf(Items.PAPER);
             boolean isRamp = client.player.getMainHandStack().isOf(Items.FEATHER);
@@ -77,9 +152,6 @@ public class FortcraftClient implements ClientModInitializer {
             int cellStartZ = Math.floorDiv((int)Math.floor(targetPos.z), gridSize) * gridSize;
 
             Direction facing = client.player.getHorizontalFacing();
-            Vec3d cameraPos = context.camera().getPos();
-            MatrixStack matrices = context.matrixStack();
-            VertexConsumer buffer = context.consumers().getBuffer(RenderLayer.getLines());
 
             if (isWall) {
                 double distToWest = targetPos.x - cellStartX;
@@ -165,6 +237,222 @@ public class FortcraftClient implements ClientModInitializer {
             }
 
         });
+    }
+
+    //  Edit-mode methods
+    private void tryEnterEditMode(MinecraftClient client) {
+        HitResult hit = client.player.raycast(6.0, 0, false);
+        if (!(hit instanceof BlockHitResult blockHit)) return;
+
+        BlockPos hitPos = blockHit.getBlockPos();
+        BlockState hitState = client.world.getBlockState(hitPos);
+        if (!hitState.isOf(Fortcraft.FORT_WALL)) return;
+
+        Direction hitSide = blockHit.getSide();
+        boolean hasX = client.world.getBlockState(hitPos.east()).isOf(Fortcraft.FORT_WALL) || client.world.getBlockState(hitPos.west()).isOf(Fortcraft.FORT_WALL);
+        boolean hasZ = client.world.getBlockState(hitPos.north()).isOf(Fortcraft.FORT_WALL) || client.world.getBlockState(hitPos.south()).isOf(Fortcraft.FORT_WALL);
+        boolean hasY = client.world.getBlockState(hitPos.up()).isOf(Fortcraft.FORT_WALL) || client.world.getBlockState(hitPos.down()).isOf(Fortcraft.FORT_WALL);
+
+        Direction facing;
+        if ((hitSide == Direction.UP || hitSide == Direction.DOWN) || (hasX && hasZ && !hasY)) {
+            facing = Direction.UP;
+        } else {
+            facing = hitState.get(FortWallBlock.FACING);
+        }
+
+        BlockPos origin = findWallOrigin(client, hitPos, facing);
+        if (origin == null) return;
+
+        editOrigin = origin;
+        editFacing = facing;
+        editGrid = new boolean[25];
+        lastHotbarSlot = client.player.getInventory().selectedSlot;
+
+        for (int y = 0; y < 5; y++) {
+            for (int w = 0; w < 5; w++) {
+                BlockPos bp = EditWallPacket.getWallBlockPos(origin, facing, w, y);
+                BlockState bs = client.world.getBlockState(bp);
+                if (!bs.isOf(Fortcraft.FORT_WALL)) {
+                    editGrid[y * 5 + w] = true; // already open
+                }
+            }
+        }
+
+        editing = true;
+    }
+
+    private BlockPos findWallOrigin(MinecraftClient client, BlockPos hitPos, Direction facing) {
+        net.minecraft.util.hit.HitResult hit = client.player.raycast(6.0, 0, false);
+        if (hit.getType() != net.minecraft.util.hit.HitResult.Type.BLOCK) return hitPos;
+
+        Vec3d targetPos = hit.getPos();
+
+        int originX = (int) Math.round((targetPos.x - 2.5) / 4.0) * 4;
+        int originY = (int) Math.round((targetPos.y - 2.5) / 4.0) * 4;
+        int originZ = (int) Math.round((targetPos.z - 2.5) / 4.0) * 4;
+
+        if (facing == Direction.UP || facing == Direction.DOWN) {
+            return new BlockPos(originX, hitPos.getY(), originZ);
+        } else if (facing == Direction.NORTH || facing == Direction.SOUTH) {
+            return new BlockPos(originX, originY, hitPos.getZ());
+        } else {
+            return new BlockPos(hitPos.getX(), originY, originZ);
+        }
+    }
+
+    private void confirmEdit() {
+        if (editOrigin != null && editFacing != null) {
+            int bitmask = 0;
+            for (int i = 0; i < 25; i++) {
+                if (editGrid[i]) bitmask |= (1 << i);
+            }
+            EditWallPacket.send(editOrigin, editFacing, bitmask);
+        }
+        editing = false;
+        editOrigin = null;
+        editFacing = null;
+        editGrid = new boolean[25];
+    }
+
+    private void cancelEdit() {
+        editing = false;
+        editOrigin = null;
+        editFacing = null;
+        editGrid = new boolean[25];
+    }
+
+    private boolean handleEditClicks(MinecraftClient client) {
+        long window = client.getWindow().getHandle();
+        boolean leftDown = GLFW.glfwGetMouseButton(window, GLFW.GLFW_MOUSE_BUTTON_LEFT) == GLFW.GLFW_PRESS;
+        boolean rightDown = GLFW.glfwGetMouseButton(window, GLFW.GLFW_MOUSE_BUTTON_RIGHT) == GLFW.GLFW_PRESS;
+
+        int cell = getAimedCell(client);
+
+        if ((leftDown && !wasLeftDown && cell < 0) || (rightDown && !wasRightDown && cell < 0)) {
+            wasLeftDown = leftDown;
+            wasRightDown = rightDown;
+            return false;
+        }
+
+        if (leftDown) {
+            if (!wasLeftDown) {
+                if (cell >= 0 && cell < 25) {
+                    editGrid[cell] = !editGrid[cell];
+                    dragTargetState = editGrid[cell];
+                    lastAimedCell = cell;
+                }
+            } else {
+                if (cell >= 0 && cell < 25 && cell != lastAimedCell) {
+                    editGrid[cell] = dragTargetState;
+                    lastAimedCell = cell;
+                }
+            }
+        } else {
+            lastAimedCell = -1;
+        }
+
+        if (rightDown && !wasRightDown) {
+            editGrid = new boolean[25];
+        }
+
+        wasLeftDown = leftDown;
+        wasRightDown = rightDown;
+        return true;
+    }
+
+    private int getAimedCell(MinecraftClient client) {
+        Vec3d eye = client.player.getEyePos();
+        Vec3d look = client.player.getRotationVector();
+
+        double planeCoord;
+        double dirComponent;
+        double eyeComponent;
+
+        boolean isFloor = (editFacing == Direction.UP || editFacing == Direction.DOWN);
+        boolean isNS = (editFacing == Direction.NORTH || editFacing == Direction.SOUTH);
+        if (isFloor) {
+            planeCoord = (eye.y < editOrigin.getY() + 0.5) ? editOrigin.getY() : editOrigin.getY() + 1.0;
+            dirComponent = look.y;
+            eyeComponent = eye.y;
+        } else if (isNS) {
+            planeCoord = (eye.z < editOrigin.getZ() + 0.5) ? editOrigin.getZ() : editOrigin.getZ() + 1.0;
+            dirComponent = look.z;
+            eyeComponent = eye.z;
+        } else {
+            planeCoord = (eye.x < editOrigin.getX() + 0.5) ? editOrigin.getX() : editOrigin.getX() + 1.0;
+            dirComponent = look.x;
+            eyeComponent = eye.x;
+        }
+
+        if (Math.abs(dirComponent) < 1e-6) return -1;
+
+        double t = (planeCoord - eyeComponent) / dirComponent;
+        if (t < 0 || t > 10) return -1;
+
+        Vec3d hitPoint = eye.add(look.multiply(t));
+
+        double localH, localV;
+        if (isFloor) {
+            localH = hitPoint.x - editOrigin.getX();
+            localV = hitPoint.z - editOrigin.getZ();
+        } else if (isNS) {
+            localH = hitPoint.x - editOrigin.getX();
+            localV = hitPoint.y - editOrigin.getY();
+        } else {
+            localH = hitPoint.z - editOrigin.getZ();
+            localV = hitPoint.y - editOrigin.getY();
+        }
+
+        int w = (int) Math.floor(localH);
+        int y = (int) Math.floor(localV);
+
+        if (w < 0 || w >= 5 || y < 0 || y >= 5) return -1;
+
+        return y * 5 + w;
+    }
+
+    private void renderEditOverlay(MatrixStack matrices, VertexConsumer buffer, Vec3d cameraPos) {
+        boolean isFloor = (editFacing == Direction.UP || editFacing == Direction.DOWN);
+        boolean isNS = (editFacing == Direction.NORTH || editFacing == Direction.SOUTH);
+
+        for (int y = 0; y < 5; y++) {
+            for (int w = 0; w < 5; w++) {
+                int idx = y * 5 + w;
+                boolean selected = editGrid[idx];
+
+                float r, g, b;
+                if (selected) {
+                    r = 0.2F; g = 0.5F; b = 1.0F;
+                } else {
+                    r = 0.8F; g = 0.8F; b = 0.8F;
+                }
+
+                Box cellBox;
+                if (isFloor) {
+                    double floorY = editOrigin.getY();
+                    cellBox = new Box(
+                            editOrigin.getX() + w, floorY - 0.01, editOrigin.getZ() + y,
+                            editOrigin.getX() + w + 1, floorY + 1.01, editOrigin.getZ() + y + 1
+                    );
+                } else if (isNS) {
+                    double z = editOrigin.getZ();
+                    cellBox = new Box(
+                            editOrigin.getX() + w, editOrigin.getY() + y, z - 0.01,
+                            editOrigin.getX() + w + 1, editOrigin.getY() + y + 1, z + 1.01
+                    );
+                } else {
+                    double x = editOrigin.getX();
+                    cellBox = new Box(
+                            x - 0.01, editOrigin.getY() + y, editOrigin.getZ() + w,
+                            x + 1.01, editOrigin.getY() + y + 1, editOrigin.getZ() + w + 1
+                    );
+                }
+
+                drawCustomBox(matrices, buffer,
+                        cellBox.offset(-cameraPos.x, -cameraPos.y, -cameraPos.z),
+                        r, g, b, 0.9F);
+            }
+        }
     }
 
     private void drawCustomBox(MatrixStack matrices, VertexConsumer vertexConsumer, Box box, float r, float g, float b, float a) {

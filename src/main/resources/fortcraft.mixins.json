@@ -6,6 +6,9 @@
 		"ExampleMixin",
 		"EggEntityMixin"
 	],
+	"client": [
+		"ClientPlayerInteractionManagerMixin"
+	],
 	"injectors": {
 		"defaultRequire": 1
 	},

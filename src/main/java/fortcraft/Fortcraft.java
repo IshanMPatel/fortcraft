@@ -334,6 +334,8 @@ public class Fortcraft implements ModInitializer {
         Registry.register(Registries.BLOCK, FORT_WALL_ID, FORT_WALL);
         Registry.register(Registries.BLOCK, FORT_RAMP_ID, FORT_RAMP);
 
+        EditWallPacket.registerServer();
+
         UseBlockCallback.EVENT.register((player, world, hand, hitResult) -> handleInteraction(player, world, hand));
         UseItemCallback.EVENT.register((player, world, hand) -> handleInteraction(player, world, hand));
 	}
